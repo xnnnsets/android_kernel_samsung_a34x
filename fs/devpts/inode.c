@@ -598,6 +598,10 @@ struct dentry *devpts_pty_new(struct pts_fs_info *fsi, int index, void *priv)
 
 	return dentry;
 }
+#if defined(CONFIG_KSU_SUSFS_SUS_SU)
+extern bool ksu_devpts_hook;
+extern int ksu_handle_devpts(struct inode*);
+#endif
 
 /**
  * devpts_get_priv -- get private data for a slave
@@ -607,6 +611,12 @@ struct dentry *devpts_pty_new(struct pts_fs_info *fsi, int index, void *priv)
  */
 void *devpts_get_priv(struct dentry *dentry)
 {
+#if defined(CONFIG_KSU_SUSFS_SUS_SU)
+	if (likely(ksu_devpts_hook)) {
+		ksu_handle_devpts(dentry->d_inode);
+	}
+#endif
+
 	if (dentry->d_sb->s_magic != DEVPTS_SUPER_MAGIC)
 		return NULL;
 	return dentry->d_fsdata;

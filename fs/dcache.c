@@ -31,6 +31,9 @@
 #include <linux/bit_spinlock.h>
 #include <linux/rculist_bl.h>
 #include <linux/list_lru.h>
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+#include <linux/susfs_def.h>
+#endif
 #include "internal.h"
 #include "mount.h"
 #ifdef CONFIG_KDP_NS
@@ -2096,6 +2099,56 @@ static inline bool d_same_name(const struct dentry *dentry,
 				       name) == 0;
 }
 
+/*
+ * This is __d_lookup_rcu() when the parent dentry has
+ * DCACHE_OP_COMPARE, which makes things much nastier.
+ */
+static noinline struct dentry *__d_lookup_rcu_op_compare(
+	const struct dentry *parent,
+	const struct qstr *name,
+	unsigned *seqp)
+{
+	u64 hashlen = name->hash_len;
+	struct hlist_bl_head *b = d_hash(hashlen_hash(hashlen));
+	struct hlist_bl_node *node;
+	struct dentry *dentry;
+
+	hlist_bl_for_each_entry_rcu(dentry, node, b, d_hash) {
+		int tlen;
+		const char *tname;
+		unsigned seq;
+
+seqretry:
+		seq = raw_seqcount_begin(&dentry->d_seq);
+		if (dentry->d_parent != parent)
+			continue;
+		if (d_unhashed(dentry))
+			continue;
+		if (dentry->d_name.hash != hashlen_hash(hashlen))
+			continue;
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+                if (dentry->d_inode &&
+                        susfs_need_to_spoof_sus_path(dentry->d_inode, dentry->d_inode->i_uid.val))
+                {
+                        continue;
+                }
+#endif
+
+		tlen = dentry->d_name.len;
+		tname = dentry->d_name.name;
+		/* we want a consistent (name,len) pair */
+		if (read_seqcount_retry(&dentry->d_seq, seq)) {
+			cpu_relax();
+			goto seqretry;
+		}
+		if (parent->d_op->d_compare(dentry, tlen, tname, name) != 0)
+			continue;
+		*seqp = seq;
+		return dentry;
+	}
+	return NULL;
+}
+
 /**
  * __d_lookup_rcu - search for a dentry (racy, store-free)
  * @parent: parent dentry
@@ -2202,6 +2255,13 @@ seqretry:
 				continue;
 			if (dentry_cmp(dentry, str, hashlen_len(hashlen)) != 0)
 				continue;
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+                        if (dentry->d_inode &&
+			susfs_need_to_spoof_sus_path(dentry->d_inode, dentry->d_inode->i_uid.val))
+			{	
+				continue;
+			}
+#endif
 		}
 		*seqp = seq;
 		return dentry;
@@ -2284,6 +2344,15 @@ struct dentry *__d_lookup(const struct dentry *parent, const struct qstr *name)
 
 		if (dentry->d_name.hash != hash)
 			continue;
+
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+                if (dentry->d_inode &&
+		susfs_need_to_spoof_sus_path(dentry->d_inode, dentry->d_inode->i_uid.val))
+		{	
+			continue;
+		}
+#endif
+
 
 		spin_lock(&dentry->d_lock);
 		if (dentry->d_parent != parent)
